@@ -1,0 +1,6 @@
+{
+  "name": "GReverse Web OSINT",
+  "description": "An AI-powered reverse image search and OSINT analysis tool.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
