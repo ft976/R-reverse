@@ -11,7 +11,7 @@ export default function OsintDashboard() {
   const [image, setImage] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [fileType, setFileType] = useState<string>('');
-  const [selectedModel, setSelectedModel] = useState<'gemini-3.5-flash' | 'meta/llama-3.2-90b-vision-instruct' | 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1'>('gemini-3.5-flash');
+  const [selectedModel, setSelectedModel] = useState<'nvidia/llama-3.1-nemotron-nano-vl-8b-v1' | 'moonshot-v1-8k'>('nvidia/llama-3.1-nemotron-nano-vl-8b-v1');
   const [showInfo, setShowInfo] = useState(false);
   
   const [isProcessing, setIsProcessing] = useState(false);
@@ -60,6 +60,47 @@ export default function OsintDashboard() {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const resizeAndCompressImage = (dataUrl: string, maxWidth = 1024, maxHeight = 1024, quality = 0.85): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = typeof window !== 'undefined' ? new window.Image() : null;
+      if (!img) {
+        resolve(dataUrl);
+        return;
+      }
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => {
+        resolve(dataUrl);
+      };
+      img.src = dataUrl;
+    });
+  };
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -67,8 +108,12 @@ export default function OsintDashboard() {
     setImageFile(file);
     setFileType(file.type);
     const reader = new FileReader();
-    reader.onloadend = () => {
-      setImage(reader.result as string);
+    reader.onloadend = async () => {
+      let finalData = reader.result as string;
+      if (file.type.startsWith('image/')) {
+        finalData = await resizeAndCompressImage(finalData);
+      }
+      setImage(finalData);
       resetResults();
     };
     reader.readAsDataURL(file);
@@ -86,8 +131,12 @@ export default function OsintDashboard() {
     setImageFile(file);
     setFileType(file.type);
     const reader = new FileReader();
-    reader.onloadend = () => {
-      setImage(reader.result as string);
+    reader.onloadend = async () => {
+      let finalData = reader.result as string;
+      if (file.type.startsWith('image/')) {
+        finalData = await resizeAndCompressImage(finalData);
+      }
+      setImage(finalData);
       resetResults();
     };
     reader.readAsDataURL(file);
@@ -118,15 +167,17 @@ export default function OsintDashboard() {
     try {
       // 1. Extract EXIF Locally (Hidden Data)
       addLog('Extracting hidden EXIF Metadata...');
+      let localExifData: any = null;
       try {
         if (fileType.startsWith('video/')) {
-           setExifData({
+           localExifData = {
              message: 'Basic Video Metadata Extracted.',
              fileName: imageFile?.name,
              fileSize: imageFile ? `${(imageFile.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown',
              fileType: fileType,
              lastModified: imageFile ? new Date(imageFile.lastModified).toISOString() : 'Unknown'
-           });
+           };
+           setExifData(localExifData);
         } else {
           const dataToParse = imageFile || image;
           const parsedExif = await exifr.parse(dataToParse, {
@@ -142,21 +193,24 @@ export default function OsintDashboard() {
             mergeOutput: true,
           });
           if (parsedExif && Object.keys(parsedExif).length > 0) {
+            localExifData = parsedExif;
             setExifData(parsedExif);
           } else {
-            setExifData({ message: 'No hidden EXIF metadata found in this image.' });
+            localExifData = { message: 'No hidden EXIF metadata found in this image.' };
+            setExifData(localExifData);
           }
         }
       } catch (e: any) {
         console.log('EXIF format unsupported or suppressed:', e.message);
-        setExifData({ message: 'No hidden EXIF metadata found or format unsupported.' });
+        localExifData = { message: 'No hidden EXIF metadata found or format unsupported.' };
+        setExifData(localExifData);
       }
 
       // 2. Global AI Analysis
-      if (selectedModel.startsWith('gemini')) {
-        addLog('Connecting to Gemini Deep Vision & Grounding Search...');
+      if (selectedModel === 'moonshot-v1-8k') {
+        addLog('Connecting to Kimi (Moonshot AI) Deep Analysis Engine...');
       } else {
-        addLog('Connecting to NVIDIA Global Analysis...');
+        addLog('Connecting to NVIDIA Global Analysis (Nemotron VL)...');
       }
       
       const base64Data = image.split(',')[1];
@@ -197,7 +251,13 @@ ${fileType.startsWith('video/') ? '5' : '4'}. **SOCMINT Profiling & Contextual I
       const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, fileType: fileType || 'image/jpeg', prompt, model: selectedModel })
+        body: JSON.stringify({ 
+          base64Data, 
+          fileType: fileType || 'image/jpeg', 
+          prompt, 
+          model: selectedModel,
+          exifData: localExifData
+        })
       });
 
       if (!analyzeRes.ok) {
@@ -493,45 +553,37 @@ ${fileType.startsWith('video/') ? '5' : '4'}. **SOCMINT Profiling & Contextual I
                     Forensic AI Model
                   </label>
                   <div className="grid grid-cols-1 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedModel('gemini-3.5-flash')}
-                      className={`font-mono text-[11px] p-3 rounded-md border transition-all flex flex-col justify-between text-left ${
-                        selectedModel === 'gemini-3.5-flash'
-                          ? 'bg-blue-500/10 border-blue-500 text-white'
-                          : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="font-bold text-blue-400">Gemini 3.5 Flash</span>
-                        <span className="px-1.5 py-0.5 bg-blue-550/20 text-blue-400 text-[8px] font-bold rounded uppercase tracking-wider border border-blue-500/20">Active Grounding Search</span>
-                      </div>
-                      <span className="text-[9px] opacity-75 mt-1 text-zinc-400">Exhaustive multimodality + Google Search evidence indexing (OSINT recommended)</span>
-                    </button>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
-                        onClick={() => setSelectedModel('meta/llama-3.2-90b-vision-instruct')}
-                        className={`font-mono text-[10px] p-2 rounded-md border transition-all flex flex-col justify-between text-left ${
-                          selectedModel === 'meta/llama-3.2-90b-vision-instruct'
-                            ? 'bg-blue-500/10 border-blue-500 text-white'
+                        onClick={() => setSelectedModel('nvidia/llama-3.1-nemotron-nano-vl-8b-v1')}
+                        className={`font-mono text-[11px] p-3 rounded-md border transition-all flex flex-col justify-between text-left ${
+                          selectedModel === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1'
+                            ? 'bg-blue-500/10 border-blue-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.15)]'
                             : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
                         }`}
                       >
-                        <span className="font-bold">LLaMA 90B Vision</span>
-                        <span className="text-[9px] opacity-75 mt-0.5 text-zinc-500">NVIDIA Cloud Vision</span>
+                        <div>
+                          <span className="font-bold text-blue-400">Nemotron VL 8B</span>
+                          <span className="block text-[8px] opacity-75 mt-0.5 text-zinc-500 uppercase tracking-wider">NVIDIA Cloud Vision</span>
+                        </div>
+                        <span className="text-[9px] opacity-75 mt-3 text-zinc-400">High-performance target imagery and video frame analysis.</span>
                       </button>
+
                       <button
                         type="button"
-                        onClick={() => setSelectedModel('nvidia/llama-3.1-nemotron-nano-vl-8b-v1')}
-                        className={`font-mono text-[10px] p-2 rounded-md border transition-all flex flex-col justify-between text-left ${
-                          selectedModel === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1'
-                            ? 'bg-blue-500/10 border-blue-500 text-white'
+                        onClick={() => setSelectedModel('moonshot-v1-8k')}
+                        className={`font-mono text-[11px] p-3 rounded-md border transition-all flex flex-col justify-between text-left ${
+                          selectedModel === 'moonshot-v1-8k'
+                            ? 'bg-blue-500/10 border-blue-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.15)]'
                             : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
                         }`}
                       >
-                        <span className="font-bold">Nemotron VL 8B</span>
-                        <span className="text-[9px] opacity-75 mt-0.5 text-zinc-500">Fast Cloud Vision</span>
+                        <div>
+                          <span className="font-bold text-emerald-400">Kimi Model</span>
+                          <span className="block text-[8px] opacity-75 mt-0.5 text-zinc-500 uppercase tracking-wider">Moonshot AI</span>
+                        </div>
+                        <span className="text-[9px] opacity-75 mt-3 text-zinc-400">Deep tabular cross-examination & forensic text/EXIF reports.</span>
                       </button>
                     </div>
                   </div>
